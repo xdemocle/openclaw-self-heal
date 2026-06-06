@@ -1,0 +1,11 @@
+# Local operator config — never commit real chat ids / secrets
+*.env
+.self-heal.env
+skill/*.local
+
+# Backups produced by check.sh
+backups/
+
+# OS / editor noise
+.DS_Store
+*.swp
