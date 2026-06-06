@@ -15,6 +15,9 @@ restart). When everything is healthy — or was safely auto-fixed — it stays s
 | Bot connectivity | Telegram channel configured |
 | LanceDB recall | embedding dimension-mismatch signatures / table present |
 | Cron delivery | any job in `error` state |
+| Config integrity | `openclaw.json` parses + no recent `.clobbered` snapshot |
+| Host resources | home disk < 90%, available memory > 10% |
+| Orphaned browser procs | headless chrome/playwright reparented to init |
 
 ## Failure classes & autonomy model
 
@@ -26,6 +29,9 @@ restart). When everything is healthy — or was safely auto-fixed — it stays s
 | exec policy `mode: ask` blocking writes | security gate + restart | **alert-only** — never auto-flips the gate |
 | Stale binary | restart | **alert-only** |
 | Gateway down | restart | **alert-only** |
+| Config corrupt / clobbered | restart | **alert-only** |
+| Disk / memory pressure | varies | **alert-only** |
+| Orphaned browser processes | low (parent already dead) | **auto** reap (ppid 1 only) |
 
 The guiding rule: **never auto-disable a human-confirmation gate and never restart a
 live service unattended.** Those are detected and reported with the exact command,
@@ -77,6 +83,16 @@ LanceDB rebuild procedure is field-verified against a real incident.
 - Parameterize the chat id and timezone via skill config rather than the cron message.
 - Field-verify the LanceDB rebuild path before allowing it unattended.
 
+## Credits
+
+The config-preflight, host-resource, and orphaned-browser-reaping checks are adapted
+from [Ramsbaby/openclaw-self-healing](https://github.com/Ramsbaby/openclaw-self-healing)
+(MIT) — a full crash-recovery/supervision system for OpenClaw. This project focuses on
+the OpenClaw **application** layer (memory recall, cron delivery, exec policy) and ports
+only the complementary host-level checks, re-tuned to an alert-only-for-risky posture.
+If you need process supervision / auto-restart / metrics, use their project alongside
+this one.
+
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Portions adapted from Ramsbaby/openclaw-self-healing (MIT).

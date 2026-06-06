@@ -55,6 +55,23 @@ All commands below were verified against the live host (OpenClaw 2026.6.1).
 - **Fix (manual):** `openclaw update && openclaw gateway restart`.
 - **Why alert-only:** requires a gateway restart.
 
+## 6. Config integrity / preflight — `ALERT-ONLY` *(ported from Ramsbaby)*
+- **Detect:** `openclaw.json` fails JSON parse, or a recent `openclaw.json.clobbered.*`
+  snapshot (< 7 days) indicates the config was overwritten/recovered.
+- **Fix (manual):** inspect, then
+  `cp ~/.openclaw/openclaw.json.last-good ~/.openclaw/openclaw.json && openclaw gateway restart`.
+- **Why alert-only:** a config restore + restart is an operator decision.
+
+## 7. Host resource pressure (disk / OOM) — `ALERT-ONLY` *(ported from Ramsbaby)*
+- **Detect:** home filesystem ≥ 90% used, or available memory ≤ 10%.
+- **Why alert-only:** the right remediation (cleanup vs. scaling) is operator judgment.
+
+## 8. Orphaned browser processes — `AUTO` *(ported from Ramsbaby)*
+- **Detect:** headless chrome/chromium/playwright processes reparented to init (ppid 1).
+- **Fix:** reap them (TERM, then KILL stragglers). **Smoke test:** none survive.
+- **Why auto:** their parent is already dead, so reaping orphans is low-risk and frees
+  RAM. Only `ppid == 1` matches — nothing attached to a live gateway is ever touched.
+
 ---
 
 ## Gateway down / degraded — `ALERT-ONLY`
@@ -66,3 +83,13 @@ All commands below were verified against the live host (OpenClaw 2026.6.1).
 1. Add detection + (if safe) fix to `check.sh`, mirroring an existing block.
 2. Add a section here with detect / fix / smoke / risk-class.
 3. If risky, route it through `note_notify`/`note_risk` — never auto-apply.
+
+---
+
+## Credits
+
+Classes 6–8 (config preflight, host resource pressure, orphaned-browser reaping) are
+adapted from [Ramsbaby/openclaw-self-healing](https://github.com/Ramsbaby/openclaw-self-healing)
+(MIT). Their project is a full crash-recovery/supervision layer; we ported only the
+checks that complement our OpenClaw-domain focus, re-tuned to our alert-only-for-risky
+posture (e.g. config restore and restarts stay manual here).

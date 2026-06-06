@@ -193,6 +193,65 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 8. CONFIG INTEGRITY (preflight)   [concept ported from Ramsbaby/openclaw-self-healing, MIT]
+# ---------------------------------------------------------------------------
+section "config integrity"
+CFG="$STATE/openclaw.json"
+if ! python3 -c "import json; json.load(open('$CFG'))" 2>/dev/null; then
+  echo "config: openclaw.json is NOT valid JSON"
+  note_issue "openclaw.json failed JSON parse."
+  note_notify "Config corrupt (openclaw.json invalid) — restore needed (risky, restart)."
+  note_risk "RISKY (restart) — inspect, then: cp ~/.openclaw/openclaw.json.last-good ~/.openclaw/openclaw.json && openclaw gateway restart"
+else
+  echo "config: openclaw.json valid"
+fi
+CLOB=$(find "$STATE" -maxdepth 1 -name 'openclaw.json.clobbered.*' -newermt '-7 days' 2>/dev/null | wc -l | tr -d ' ')
+if [ "${CLOB:-0}" -gt 0 ]; then
+  echo "config: $CLOB clobbered snapshot(s) in last 7d"
+  note_issue "$CLOB recent openclaw.json.clobbered.* snapshot(s)."
+  note_notify "Config was clobbered recently ($CLOB in 7d) — review for instability."
+fi
+
+# ---------------------------------------------------------------------------
+# 9. HOST RESOURCES (disk / OOM pressure)   [concept ported from Ramsbaby, MIT]
+# ---------------------------------------------------------------------------
+section "host resources"
+DISK_PCT=$(df -P "$HOME" 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')
+echo "disk(home): ${DISK_PCT:-?}% used"
+if [ "${DISK_PCT:-0}" -ge 90 ]; then
+  note_issue "Home filesystem at ${DISK_PCT}%."
+  note_notify "Disk pressure: home fs at ${DISK_PCT}% (>=90%)."
+fi
+if command -v free >/dev/null 2>&1; then
+  MEM_AVAIL_PCT=$(free | awk '/^Mem:/{printf "%d", $7/$2*100}')
+  echo "mem available: ${MEM_AVAIL_PCT:-?}%"
+  if [ "${MEM_AVAIL_PCT:-100}" -le 10 ]; then
+    note_issue "Available memory at ${MEM_AVAIL_PCT}%."
+    note_notify "Memory pressure: only ${MEM_AVAIL_PCT}% available (OOM risk)."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 10. ORPHANED BROWSER PROCESSES (zombie Chrome/Playwright)   [ported from Ramsbaby, MIT]
+#     SAFE auto-fix: reap ONLY browser procs reparented to init (ppid 1).
+# ---------------------------------------------------------------------------
+section "orphaned browser procs"
+mapfile -t ORPHANS < <(ps -eo pid=,ppid=,args= | awk '$2==1 && (tolower($0) ~ /chrom(e|ium)|playwright/) && (tolower($0) ~ /headless|--type=/) {print $1}')
+echo "orphaned browser procs: ${#ORPHANS[@]}"
+if [ "${#ORPHANS[@]}" -gt 0 ]; then
+  note_issue "${#ORPHANS[@]} orphaned browser process(es) detected."
+  if [ "$APPLY" = 1 ]; then
+    kill "${ORPHANS[@]}" 2>/dev/null
+    sleep 2
+    LEFT=0; for p in "${ORPHANS[@]}"; do kill -0 "$p" 2>/dev/null && LEFT=$((LEFT+1)); done
+    [ "$LEFT" -gt 0 ] && kill -9 "${ORPHANS[@]}" 2>/dev/null
+    note_fixed "Reaped ${#ORPHANS[@]} orphaned browser process(es)$([ "$LEFT" -gt 0 ] && echo " (force-killed $LEFT)")."
+  else
+    note_notify "Orphaned browser processes present — run with --apply to reap."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # REPORT
 # ---------------------------------------------------------------------------
 section "summary"

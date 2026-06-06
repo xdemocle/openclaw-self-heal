@@ -1,6 +1,6 @@
 ---
 name: self-heal
-description: Autonomous OpenClaw self-healing. Probes gateway health, bot connectivity, LanceDB recall, and cron delivery; auto-applies SAFE fixes from the runbook; messages the operator ONLY for novel issues or risky fixes (exec-policy change, restarts). Use on a cron schedule or when the operator asks to "check infra" / "self-heal".
+description: Autonomous OpenClaw self-healing. Probes gateway health, bot connectivity, LanceDB recall, cron delivery, config integrity, host resources (disk/OOM), and orphaned browser processes; auto-applies SAFE fixes from the runbook (plugin-warning normalization, orphaned-process reaping, gated LanceDB rebuild); messages the operator ONLY for novel issues or risky fixes (exec-policy change, config restore, restarts). Use on a cron schedule or when the operator asks to "check infra" / "self-heal".
 ---
 
 # Self-Heal — OpenClaw infrastructure
