@@ -95,4 +95,7 @@ this one.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Portions adapted from Ramsbaby/openclaw-self-healing (MIT).
+MIT — see [LICENSE](LICENSE). Portions of `skill/check.sh` and `skill/runbook.md`
+(config-preflight, host-resource, and orphaned-browser checks) are adapted from
+[Ramsbaby/openclaw-self-healing](https://github.com/Ramsbaby/openclaw-self-healing),
+© 2026 ramsbaby (이정우), MIT. See [LICENSE](LICENSE) → *Third-Party Attributions*.

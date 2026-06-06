@@ -19,3 +19,17 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+-------------------------------------------------------------------------------
+
+THIRD-PARTY ATTRIBUTIONS
+
+Portions of this software — specifically the config-preflight, host-resource
+(disk/OOM), and orphaned-browser-process checks in skill/check.sh, and their
+corresponding entries in skill/runbook.md — are adapted from
+"openclaw-self-healing", which is licensed under the MIT License:
+
+    Copyright (c) 2026 ramsbaby (이정우)
+    https://github.com/Ramsbaby/openclaw-self-healing
+
+The MIT permission and warranty notices above apply equally to those portions.
