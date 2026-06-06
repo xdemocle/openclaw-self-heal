@@ -24,12 +24,19 @@ SOFTWARE.
 
 THIRD-PARTY ATTRIBUTIONS
 
-Portions of this software — specifically the config-preflight, host-resource
-(disk/OOM), and orphaned-browser-process checks in skill/check.sh, and their
-corresponding entries in skill/runbook.md — are adapted from
-"openclaw-self-healing", which is licensed under the MIT License:
-
-    Copyright (c) 2026 ramsbaby (이정우)
-    https://github.com/Ramsbaby/openclaw-self-healing
-
+Portions of this software are adapted from the following MIT-licensed projects.
 The MIT permission and warranty notices above apply equally to those portions.
+
+(1) The config-preflight, host-resource (disk/OOM), and orphaned-browser-process
+    checks in skill/check.sh (and their entries in skill/runbook.md) are adapted
+    from "openclaw-self-healing":
+
+        Copyright (c) 2026 ramsbaby (이정우)
+        https://github.com/Ramsbaby/openclaw-self-healing
+
+(2) The backup (*.bak*) rotation logic and the per-job cron-error detail in
+    skill/check.sh (and their entries in skill/runbook.md) are adapted from
+    "openclaw-ops":
+
+        Copyright (c) 2026 Cathryn Lavery
+        https://github.com/cathrynlavery/openclaw-ops

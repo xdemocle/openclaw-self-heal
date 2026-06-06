@@ -123,17 +123,39 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. CRON DELIVERY STATUS
+# 4. CRON DELIVERY STATUS   [per-job error detail adapted from cathrynlavery/openclaw-ops, MIT]
 # ---------------------------------------------------------------------------
 section "cron delivery"
-CRON="$($OC cron list 2>&1 | oc_clean)"
-# Status column == 'error' for any job?
-ERR_JOBS="$(printf '%s\n' "$CRON" | awk '$0 ~ /[[:space:]]error[[:space:]]/ {print}')"
-if [ -n "$ERR_JOBS" ]; then
-  N=$(printf '%s\n' "$ERR_JOBS" | grep -c .)
+CRON_F="$(mktemp)"
+$OC cron list --all --json >"$CRON_F" 2>/dev/null
+CRON_ERR=""
+if [ -s "$CRON_F" ]; then
+  # Pass the JSON as a file arg (NOT stdin — stdin is the heredoc script).
+  CRON_ERR="$(python3 - "$CRON_F" <<'PY' 2>/dev/null
+import sys, json
+try: d = json.load(open(sys.argv[1]))
+except Exception: sys.exit(0)
+jobs = d if isinstance(d, list) else d.get("jobs", d)
+for j in jobs:
+    st = j.get("state", {}) or {}
+    if st.get("lastStatus") == "error" or st.get("consecutiveErrors", 0) > 0:
+        name = (j.get("name") or j.get("id", "?"))[:40]
+        err = (st.get("lastError") or st.get("lastErrorReason") or "unknown").splitlines()[0][:90]
+        print(f"{name} (x{st.get('consecutiveErrors', 0)}): {err}")
+PY
+)"
+else
+  # Fallback to text table if --json is unavailable on older builds.
+  CRON_ERR="$($OC cron list 2>&1 | oc_clean | awk '$0 ~ /[[:space:]]error[[:space:]]/ {print "(job in error — run: openclaw cron list)"}')"
+fi
+rm -f "$CRON_F"
+if [ -n "$CRON_ERR" ]; then
+  N=$(printf '%s\n' "$CRON_ERR" | grep -c .)
   echo "cron: $N job(s) in error state"
-  note_issue "$N cron job(s) reporting error status."
-  note_notify "Cron job(s) in error — operator review (per-job failures vary)."
+  while IFS= read -r l; do echo "  • $l"; done <<< "$CRON_ERR"
+  note_issue "$N cron job(s) in error."
+  DETAIL="$(printf '%s\n' "$CRON_ERR" | head -3 | paste -sd'; ' -)"
+  note_notify "Cron error(s): $DETAIL"
 else
   echo "cron: no jobs in error state"
 fi
@@ -249,6 +271,48 @@ if [ "${#ORPHANS[@]}" -gt 0 ]; then
   else
     note_notify "Orphaned browser processes present — run with --apply to reap."
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# 11. BACKUP (*.bak*) ROTATION   [adapted from cathrynlavery/openclaw-ops, MIT]
+#     SAFE auto-fix: keep newest N per group; delete older surplus.
+# ---------------------------------------------------------------------------
+section "backup rotation"
+BAK_KEEP=3
+BAK_PLAN="$(python3 - "$STATE" "$BAK_KEEP" <<'PY' 2>/dev/null
+import os, sys
+root, keep = sys.argv[1], int(sys.argv[2])
+groups = {}
+for dirpath, dirs, files in os.walk(root):
+    dirs[:] = [d for d in dirs if d not in ('node_modules', 'npm', 'cache', '.git')]
+    for f in files:
+        if '.bak' in f:
+            p = os.path.join(dirpath, f)
+            key = p[:p.index('.bak')]            # group by path prefix before first .bak
+            try: mt = os.path.getmtime(p)
+            except OSError: continue
+            groups.setdefault(key, []).append((mt, p))
+for key, items in groups.items():
+    items.sort(reverse=True)                      # newest first
+    for _, p in items[keep:]:                     # surplus = everything past newest N
+        try: print(f"{os.path.getsize(p)}\t{p}")
+        except OSError: pass
+PY
+)"
+if [ -n "$BAK_PLAN" ]; then
+  CNT=$(printf '%s\n' "$BAK_PLAN" | grep -c .)
+  BYTES=$(printf '%s\n' "$BAK_PLAN" | awk -F'\t' '{s+=$1} END{print s+0}')
+  HUMAN=$(awk -v b="$BYTES" 'BEGIN{u="B";if(b>1048576){b/=1048576;u="MB"}else if(b>1024){b/=1024;u="KB"}printf "%.1f%s",b,u}')
+  echo "backups: $CNT surplus *.bak* file(s) beyond newest $BAK_KEEP/group (~$HUMAN)"
+  note_issue "$CNT surplus backup file(s) (~$HUMAN reclaimable)."
+  if [ "$APPLY" = 1 ]; then
+    printf '%s\n' "$BAK_PLAN" | cut -f2- | while IFS= read -r f; do rm -f "$f"; done
+    note_fixed "Rotated backups: removed $CNT surplus *.bak* file(s), freed ~$HUMAN."
+  else
+    note_notify "Backup sprawl: $CNT surplus *.bak* file(s) (~$HUMAN) — run with --apply to rotate."
+  fi
+else
+  echo "backups: within retention (newest $BAK_KEEP/group)"
 fi
 
 # ---------------------------------------------------------------------------

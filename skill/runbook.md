@@ -32,9 +32,12 @@ All commands below were verified against the live host (OpenClaw 2026.6.1).
   > real mismatch. Confirm against a real incident before trusting it unattended.
 
 ## 3. Cron delivery failures — `ALERT-ONLY`
-- **Detect:** any job shows `error` in `openclaw cron list`.
-- **Why alert:** root causes differ per job (model error, channel auth, payload).
-  No single safe blanket fix. The alert names the failing job IDs.
+- **Detect:** `openclaw cron list --all --json` — any job with `state.lastStatus == error`
+  or `state.consecutiveErrors > 0`. The alert includes the job name, consecutive-error
+  count, and the first line of `state.lastError` / `lastErrorReason`
+  *(per-job detail adapted from cathrynlavery/openclaw-ops, MIT)*.
+- **Why alert:** root causes differ per job (timeout, model error, channel auth, payload).
+  No single safe blanket fix.
 - **Operator paths:** `openclaw cron get <id>` to inspect, `openclaw cron run <id>`
   to retry once, `openclaw cron runs <id>` for history.
 
@@ -72,6 +75,13 @@ All commands below were verified against the live host (OpenClaw 2026.6.1).
 - **Why auto:** their parent is already dead, so reaping orphans is low-risk and frees
   RAM. Only `ppid == 1` matches — nothing attached to a live gateway is ever touched.
 
+## 9. Backup (`*.bak*`) sprawl — `AUTO` *(adapted from cathrynlavery/openclaw-ops)*
+- **Detect:** files containing `.bak` under `~/.openclaw`, grouped by the path prefix
+  before the first `.bak`; any group with more than the newest **3** entries.
+  (Skips `node_modules`, `npm`, `cache`, `.git` so packaged fixtures are never touched.)
+- **Fix:** delete surplus beyond the newest 3 per group. **Smoke test:** count drops to 0.
+- **Why auto:** keeps the 3 most recent backups per file; low-risk disk hygiene.
+
 ---
 
 ## Gateway down / degraded — `ALERT-ONLY`
@@ -90,6 +100,11 @@ All commands below were verified against the live host (OpenClaw 2026.6.1).
 
 Classes 6–8 (config preflight, host resource pressure, orphaned-browser reaping) are
 adapted from [Ramsbaby/openclaw-self-healing](https://github.com/Ramsbaby/openclaw-self-healing)
-(MIT). Their project is a full crash-recovery/supervision layer; we ported only the
-checks that complement our OpenClaw-domain focus, re-tuned to our alert-only-for-risky
-posture (e.g. config restore and restarts stay manual here).
+(MIT) — a full crash-recovery/supervision layer.
+
+Class 9 (backup rotation) and the per-job cron-error detail in class 3 are adapted from
+[cathrynlavery/openclaw-ops](https://github.com/cathrynlavery/openclaw-ops) (MIT) — a
+broad OpenClaw operations skill.
+
+In both cases we ported only the pieces that complement our OpenClaw-domain focus, re-tuned
+to our alert-only-for-risky posture (config restore and restarts stay manual here).
