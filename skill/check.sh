@@ -316,19 +316,120 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# DEDUP: avoid re-pinging the same needs_operator item every cycle.
+# New fingerprints always notify. Repeated fingerprints notify at most once
+# per 24h. Risky items (RISK array non-empty) force-notify everything, so
+# security-gate / restart-class fixes are never silently suppressed.
+# ---------------------------------------------------------------------------
+NOTIFY_STATE="$STATE/state/self-heal-notify-state.json"
+REPEAT_SUPPRESS_SEC=$((24 * 3600))
+
+# Snapshot full list BEFORE filtering (used in report + summary + state)
+NEEDS_ALL=("${NOTIFY[@]}")
+
+# Load lastNotifiedAt epoch per fingerprint from state file
+declare -A NS_LAST=()
+if [ -f "$NOTIFY_STATE" ]; then
+  while IFS=$'\t' read -r fp ep; do
+    [ -n "$fp" ] && NS_LAST["$fp"]="${ep:-0}"
+  done < <(python3 - "$NOTIFY_STATE" <<'PY' 2>/dev/null
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    for fp, v in (d.get('items') or {}).items():
+        ln = v.get('lastNotifiedAt') or ''
+        ep = 0
+        if ln:
+            try:
+                from datetime import datetime
+                ep = int(datetime.fromisoformat(ln.replace('Z','+00:00')).timestamp())
+            except Exception: ep = 0
+        print(f"{fp}\t{ep}")
+except Exception: pass
+PY
+)
+fi
+NOW_EPOCH=$(date +%s)
+
+# If any risky item present, force-notify all (operator must see security/restart)
+FORCE_NOTIFY=0
+[ ${#RISK[@]} -gt 0 ] && FORCE_NOTIFY=1
+
+NEW_NOTIFY=()
+DEDUPED_LIST=()
+for item in "${NEEDS_ALL[@]}"; do
+  if [ "$FORCE_NOTIFY" = 1 ]; then
+    NEW_NOTIFY+=("$item")
+    continue
+  fi
+  FP="$(printf '%s' "$item" | python3 -c 'import sys,hashlib; print(hashlib.sha256(sys.stdin.read().encode()).hexdigest()[:12])')"
+  LAST="${NS_LAST[$FP]:-0}"
+  if [ "$LAST" = 0 ] || [ $((NOW_EPOCH - LAST)) -ge "$REPEAT_SUPPRESS_SEC" ]; then
+    NEW_NOTIFY+=("$item")
+  else
+    DEDUPED_LIST+=("$item")
+  fi
+done
+NOTIFY=("${NEW_NOTIFY[@]}")
+DEDUPED=("${DEDUPED_LIST[@]}")
+
+# ---------------------------------------------------------------------------
 # REPORT
 # ---------------------------------------------------------------------------
 section "summary"
-printf 'issues=%d  auto-fixed=%d  needs-operator=%d\n' "${#ISSUES[@]}" "${#FIXED[@]}" "${#NOTIFY[@]}"
-[ ${#FIXED[@]}  -gt 0 ] && { echo "AUTO-FIXED:"; printf '  - %s\n' "${FIXED[@]}"; }
-[ ${#NOTIFY[@]} -gt 0 ] && { echo "NEEDS OPERATOR:"; printf '  - %s\n' "${NOTIFY[@]}"; }
-[ ${#RISK[@]}   -gt 0 ] && { echo "RISKY FIXES (manual):"; printf '  - %s\n' "${RISK[@]}"; }
+printf 'issues=%d  auto-fixed=%d  needs-operator=%d  (deduped=%d)\n' \
+  "${#ISSUES[@]}" "${#FIXED[@]}" "${#NEEDS_ALL[@]}" "${#DEDUPED[@]}"
+[ ${#FIXED[@]}     -gt 0 ] && { echo "AUTO-FIXED:";                       printf '  - %s\n' "${FIXED[@]}"; }
+[ ${#NEEDS_ALL[@]} -gt 0 ] && { echo "NEEDS OPERATOR:";                  printf '  - %s\n' "${NEEDS_ALL[@]}"; }
+[ ${#RISK[@]}      -gt 0 ] && { echo "RISKY FIXES (manual):";            printf '  - %s\n' "${RISK[@]}"; }
+[ ${#DEDUPED[@]}   -gt 0 ] && { echo "DEDUPED (silently re-observed, last ping < 24h):"; printf '  - %s\n' "${DEDUPED[@]}"; }
 
 # JSON summary for the agent wrapper. Escapes are minimal (descriptions are ASCII).
 json_arr() { local out="" first=1; for x in "$@"; do x=${x//\"/\'}; if [ $first = 1 ]; then out="\"$x\""; first=0; else out="$out,\"$x\""; fi; done; printf '[%s]' "$out"; }
-NOTIFY_FLAG=0; [ ${#NOTIFY[@]} -gt 0 ] && NOTIFY_FLAG=1
-printf 'SUMMARY {"notify":%d,"fixed":%s,"needs_operator":%s,"risky":%s}\n' \
-  "$NOTIFY_FLAG" "$(json_arr "${FIXED[@]}")" "$(json_arr "${NOTIFY[@]}")" "$(json_arr "${RISK[@]}")"
+NOTIFY_FLAG=0
+[ ${#NOTIFY[@]} -gt 0 ] && NOTIFY_FLAG=1
+[ ${#RISK[@]}   -gt 0 ] && NOTIFY_FLAG=1
+printf 'SUMMARY {"notify":%d,"fixed":%s,"needs_operator":%s,"risky":%s,"deduped_count":%d}\n' \
+  "$NOTIFY_FLAG" "$(json_arr "${FIXED[@]}")" "$(json_arr "${NEEDS_ALL[@]}")" "$(json_arr "${RISK[@]}")" "${#DEDUPED[@]}"
+
+# ---------------------------------------------------------------------------
+# PERSIST DEDUP STATE
+# ---------------------------------------------------------------------------
+python3 - "$NOTIFY_STATE" "$NOW_EPOCH" "---NEW---" "${NEW_NOTIFY[@]}" "---ALL---" "${NEEDS_ALL[@]}" <<'PY' 2>/dev/null
+import json, os, sys
+from datetime import datetime, timezone
+import hashlib
+state_path = sys.argv[1]
+now_epoch = int(sys.argv[2])
+mode = 'none'
+new_items, all_items = [], []
+for arg in sys.argv[3:]:
+    if arg == '---NEW---': mode = 'new'
+    elif arg == '---ALL---': mode = 'all'
+    elif mode == 'new': new_items.append(arg)
+    elif mode == 'all': all_items.append(arg)
+now_iso = datetime.fromtimestamp(now_epoch, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+new_fps = {hashlib.sha256(x.encode()).hexdigest()[:12] for x in new_items}
+try:
+    state = json.load(open(state_path)) if os.path.exists(state_path) else {'schemaVersion': 1, 'items': {}}
+except Exception:
+    state = {'schemaVersion': 1, 'items': {}}
+state.setdefault('items', {})
+for item in all_items:
+    fp = hashlib.sha256(item.encode()).hexdigest()[:12]
+    entry = state['items'].get(fp, {})
+    if 'firstSeenAt' not in entry:
+        entry['firstSeenAt'] = now_iso
+    entry['lastSeenAt'] = now_iso
+    entry['example'] = item[:200]
+    if fp in new_fps:
+        entry['lastNotifiedAt'] = now_iso
+        entry['notifyCount'] = entry.get('notifyCount', 0) + 1
+    state['items'][fp] = entry
+os.makedirs(os.path.dirname(state_path), exist_ok=True)
+with open(state_path, 'w') as f:
+    json.dump(state, f, indent=2, sort_keys=True)
+PY
 
 [ "$NOTIFY_FLAG" = 1 ] && exit 10
 exit 0
