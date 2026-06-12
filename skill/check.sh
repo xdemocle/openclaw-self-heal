@@ -79,47 +79,30 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. LANCEDB RECALL ERRORS  (embedding dimension mismatch class)
+# 3. HINDSIGHT HEALTH CHECK   (local memory layer, 2026-06-12)
 # ---------------------------------------------------------------------------
-section "lancedb recall"
-DIM_HIT=0
-if [ -d "$LOGDIR" ]; then
-  # signatures of an embedding-dimension / vector-shape failure
-  if grep -rilE 'dimension mismatch|expected dim|vector .*(length|dim).*(mismatch|differ)|wrong dimension|recall failed' "$LOGDIR" 2>/dev/null | grep -q .; then
-    DIM_HIT=1
-  fi
-fi
-if [ ! -d "$LANCE/memories.lance" ]; then
-  echo "lancedb: table missing ($LANCE/memories.lance)"
-  note_issue "LanceDB memories table missing."
-  note_notify "LanceDB table missing — operator review before rebuild."
-elif [ "$DIM_HIT" = 1 ]; then
-  echo "lancedb: dimension-mismatch signature found in logs"
-  note_issue "Embedding dimension mismatch detected in logs."
-  if [ "$APPLY" = 1 ] && [ "$ALLOW_REBUILD" = 1 ]; then
-    mkdir -p "$BACKUPS"
-    BK="$BACKUPS/lancedb-$TS.tgz"
-    if tar -czf "$BK" -C "$STATE/memory" lancedb 2>/dev/null; then
-      echo "lancedb: backed up -> $BK"
-      MIG="$STATE/scripts/migrate-memories-to-lancedb.sh"
-      if [ -x "$MIG" ] && "$MIG" >/dev/null 2>&1; then
-        # smoke test: signature gone after rebuild?
-        if grep -rilE 'dimension mismatch|recall failed' "$LOGDIR" 2>/dev/null | grep -q .; then
-          note_notify "LanceDB rebuild ran but error signature persists — escalate."
-        else
-          note_fixed "LanceDB rebuilt from migration script (backup: $BK)."
-        fi
-      else
-        note_notify "LanceDB rebuild script missing/failed — backup at $BK, operator needed."
-      fi
-    else
-      note_notify "LanceDB backup failed — refusing to rebuild. Operator needed."
-    fi
-  else
-    note_notify "Embedding dimension mismatch — rebuild gated (run with --apply --allow-rebuild)."
-  fi
+section "hindsight"
+HINSDP=127.0.0.1:8888
+
+# Check /health endpoint — returns {"status":"healthy","database":"connected"}
+HINS_RAW=$(curl -s --max-time 5 http://$HINSDP/health 2>&1)
+HINS_RC=$?
+
+if [ $HINS_RC -ne 0 ] || [ -z "$HINS_RAW" ]; then
+  echo "hindsight: unreachable (curl rc=$HINS_RC)"
+  note_issue "Hindsight API unreachable at $HINSDP."
+  note_notify "Hindsight unreachable — agent memory layer down."
 else
-  echo "lancedb: OK"
+  # Parse status and database fields
+  HINS_STAT=$(echo "$HINS_RAW" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null)
+  HINS_DB=$(echo "$HINS_RAW" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('database','?'))" 2>/dev/null)
+  if [ "$HINS_STAT" = "healthy" ] && [ "$HINS_DB" = "connected" ]; then
+    echo "hindsight: OK (status=$HINS_STAT, db=$HINS_DB)"
+  else
+    echo "hindsight: DEGRADED (status=$HINS_STAT, db=$HINS_DB)"
+    note_issue "Hindsight degraded: status=$HINS_STAT database=$HINS_DB."
+    note_notify "Hindsight degraded — status=$HINS_STAT db=$HINS_DB."
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -164,14 +147,14 @@ fi
 # 5. PLUGIN WARNINGS  (SAFE auto-fix via doctor)
 # ---------------------------------------------------------------------------
 section "plugin warnings"
-DOC="$($OC doctor --non-interactive 2>&1 | oc_clean)"
+DOC="$(timeout 15 $OC doctor --non-interactive 2>&1 | oc_clean)"
 if printf '%s' "$DOC" | grep -qiE 'warn|warning|deprecat|legacy'; then
   echo "doctor: warnings present"
   note_issue "Plugin/config warnings reported by doctor."
   if [ "$APPLY" = 1 ]; then
-    if $OC doctor --non-interactive --fix >/dev/null 2>&1; then
+    if timeout 15 $OC doctor --non-interactive --fix >/dev/null 2>&1; then
       # smoke test: warnings cleared?
-      if $OC doctor --non-interactive 2>&1 | oc_clean | grep -qiE 'warn|warning|deprecat|legacy'; then
+      if timeout 15 $OC doctor --non-interactive 2>&1 | oc_clean | grep -qiE 'warn|warning|deprecat|legacy'; then
         note_notify "doctor --fix ran but warnings remain — operator review."
       else
         note_fixed "Plugin/config warnings cleared via 'doctor --fix'."
