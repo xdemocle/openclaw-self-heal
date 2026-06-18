@@ -144,6 +144,122 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 4a. CRON: lightContext:true on isolated jobs → runner-entered stall (AUTO)
+#     Pattern confirmed 2026-06-15: lightContext:true + isolated → stall.
+#     Working crons (med reminders) all have lightContext:false.
+#     Auto-fix: patch payload.lightContext to false.
+# ---------------------------------------------------------------------------
+section "cron lightContext stall prevention"
+CRON_LC_FILE="$(mktemp)"
+$OC cron list --all --json >"$CRON_LC_FILE" 2>/dev/null
+if [ -s "$CRON_LC_FILE" ]; then
+  LC_BAD="$($OC cron list --all --json 2>/dev/null | python3 - "$CRON_LC_FILE" <<'PY' 2>/dev/null
+import sys, json
+try: d = json.load(open(sys.argv[1]))
+except Exception: sys.exit(0)
+jobs = d if isinstance(d, list) else d.get("jobs", d)
+for j in jobs:
+    st = j.get("state", {}) or {}
+    pl = j.get("payload") or {}
+    tgt = j.get("sessionTarget") or ""
+    lc = pl.get("lightContext")
+    jid = j.get("id") or ""
+    name = (j.get("name") or jid)[:40]
+    if tgt == "isolated" and lc is True:
+        err = (st.get("lastError") or st.get("lastErrorReason") or "").splitlines()[0][:90]
+        print(f"{jid}\t{name}\t{err}")
+PY
+)"
+  if [ -n "$LC_BAD" ]; then
+    while IFS=$'\t' read -r jid jname jerr; do
+      echo "  found: $jname (id=$jid)"
+      if [ "$APPLY" = 1 ]; then
+        if $OC cron edit "$jid" --no-light-context >/dev/null 2>&1; then
+          note_fixed "Cron job '$jname': lightContext:true→false (stall fix)."
+        else
+          note_notify "Cron job '$jname': lightContext:true→false FAILED — operator review."
+        fi
+      else
+        note_issue "Cron job '$jname' (isolated) has lightContext:true — runner-entered stall risk."
+        note_notify "Cron job '$jname' has lightContext:true — will stall (use --apply to fix)."
+      fi
+    done <<< "$LC_BAD"
+  else
+    echo "  no isolated+lightContext:true jobs found (all healthy)."
+  fi
+else
+  echo "  (could not read cron list)"
+fi
+rm -f "$CRON_LC_FILE"
+
+# ---------------------------------------------------------------------------
+# 4b. CRON: accountId:"main" in delivery → Telegram token error (AUTO)
+#     Telegram account name is "default", not "main". Auto-fix: patch accountId→default.
+#     Auto-fix: patch delivery.accountId to "default".
+# ---------------------------------------------------------------------------
+section "cron Telegram accountId mismatch"
+CRON_ACC_FILE="$(mktemp)"
+$OC cron list --all --json >"$CRON_ACC_FILE" 2>/dev/null
+if [ -s "$CRON_ACC_FILE" ]; then
+  # Detect BOTH: config-level "main" AND stale error strings from the old "main" account bug.
+  # The error "account main" persists in lastError even after config is fixed to "default",
+  # so we detect by error string too and force a re-patch to clear it.
+  ACC_BAD="$($OC cron list --all --json 2>/dev/null | python3 - "$CRON_ACC_FILE" <<'PY' 2>/dev/null
+import sys, json
+try: d = json.load(open(sys.argv[1]))
+except Exception: sys.exit(0)
+jobs = d if isinstance(d, list) else d.get("jobs", d)
+for j in jobs:
+    del_ = j.get("delivery") or {}
+    acc = del_.get("accountId") or ""
+    st = j.get("state") or {}
+    err = (st.get("lastError") or "") + (st.get("lastErrorReason") or "")
+    jid = j.get("id") or ""
+    name = (j.get("name") or jid)[:40]
+    # Flag if config says "main" OR if stored error references "account main" (stale bug)
+    if acc == "main" or 'account "main"' in err or "account 'main'" in err:
+        print(f"{jid}\t{name}\t{acc}\t{1 if acc=='main' else 0}")
+PY
+)"
+  if [ -n "$ACC_BAD" ]; then
+    while IFS=$'\t' read -r jid jname acc was_main; do
+      had_main_err=0
+      if [ "$was_main" = "1" ]; then
+        echo "  found: $jname (id=$jid) — accountId='main'"
+      else
+        echo "  found: $jname (id=$jid) — stale 'account main' error in lastError (config already default)"
+        had_main_err=1
+      fi
+      if [ "$APPLY" = 1 ]; then
+        # Always re-patch to default — clears stale error state even if already default
+        if $OC cron edit "$jid" --account default >/dev/null 2>&1; then
+          if [ "$had_main_err" = "1" ]; then
+            note_fixed "Cron job '$jname': cleared stale 'account main' error (re-patched to accountId=default)."
+          else
+            note_fixed "Cron job '$jname': accountId main→default (Telegram token fix)."
+          fi
+        else
+          note_notify "Cron job '$jname': account fix FAILED — operator review."
+        fi
+      else
+        if [ "$had_main_err" = "1" ]; then
+          note_issue "Cron job '$jname' has stale 'account main' error in lastError."
+          note_notify "Cron job '$jname': stale Telegram error (config looks correct, needs re-patch) — use --apply to clear."
+        else
+          note_issue "Cron job '$jname' uses accountId='main' — Telegram delivery fails."
+          note_notify "Cron job '$jname': accountId='main' (should be 'default') — use --apply to fix."
+        fi
+      fi
+    done <<< "$ACC_BAD"
+  else
+    echo "  no accountId:'main' jobs found (all healthy)."
+  fi
+else
+  echo "  (could not read cron list)"
+fi
+rm -f "$CRON_ACC_FILE"
+
+# ---------------------------------------------------------------------------
 # 5. PLUGIN WARNINGS  (SAFE auto-fix via doctor)
 # ---------------------------------------------------------------------------
 section "plugin warnings"

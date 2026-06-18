@@ -20,18 +20,33 @@ All commands below were verified against the live host (OpenClaw 2026.6.1).
 - **Smoke test:** re-run `openclaw doctor --non-interactive`; warnings gone.
 - **Why auto:** doctor's own repair path, idempotent, no service bounce.
 
-## 2. Embedding dimension mismatch (LanceDB recall) — `AUTO+BACKUP`
-- **Detect:** log signatures `dimension mismatch | expected dim | recall failed`,
-  or missing `~/.openclaw/memory/lancedb/memories.lance`.
-- **Fix (gated):** back up `memory/lancedb` → `~/.openclaw/backups/lancedb-<ts>.tgz`,
-  then re-run `~/.openclaw/scripts/migrate-memories-to-lancedb.sh`.
-- **Smoke test:** error signature absent from logs after rebuild.
-- **Why gated:** a rebuild rewrites the vector store. The script refuses to proceed
-  unless the backup succeeded, and only runs at all with `--allow-rebuild`.
-  > ⚠️ The exact rebuild procedure here is **candidate, not yet field-verified** on a
-  > real mismatch. Confirm against a real incident before trusting it unattended.
+## 2. Hindsight memory layer health — `ALERT-ONLY`
+- **Detect:** curl http://127.0.0.1:8888/health returns non-healthy status or db disconnection.
+  Hindsight is the agent's long-term memory (local, Postgres-backed). LanceDB is retired.
+- **Fix:** check `systemctl --user status hindsight-api` for crash logs; restart if needed.
+  If the database is corrupted, the restore path is operator judgment.
+- **Why alert-only:** Hindsight state is critical; a bad rebuild can lose memory. Operator review.
 
-## 3. Cron delivery failures — `ALERT-ONLY`
+## 3a. Cron `lightContext:true` + `isolated` → runner-entered stall — `AUTO`
+- **Detect:** `openclaw cron list --all --json` — jobs where `sessionTarget=="isolated"`
+  AND `payload.lightContext==true`. Confirmed pattern: these stall at `runner-entered`
+  before execution. All working isolated crons (med reminders) have `lightContext:false`.
+- **Fix:** `openclaw cron update <id> --json '{"payload":{"lightContext":false}}'`.
+- **Smoke test:** next scheduled run completes without `runner-entered` error.
+- **Why auto:** deterministic, no service impact, no restart. Field-confirmed 2026-06-15.
+
+## 3b. Cron Telegram delivery failure ("account main" error) — `AUTO`
+- **Detect:** Two signals — (a) `delivery.accountId == "main"` in config, OR (b) `lastError` /
+  `lastErrorReason` contains `"account \"main\""` (stale error from the legacy "main" account
+  bug, persists even after config is corrected). The Telegram account in this install is
+  named `"default"`, not `"main"` — OpenClaw's delivery system would look for the wrong
+  account and fail with that exact error string.
+- **Fix:** `openclaw cron edit <id> --account default` (re-patching clears the stale error
+  state in addition to correcting the config).
+- **Smoke test:** next scheduled run delivers without token-missing error.
+- **Why auto:** deterministic, no service impact, no restart. Field-confirmed 2026-06-15.
+
+## 3c. Cron delivery failures (generic) — `ALERT-ONLY`
 - **Detect:** `openclaw cron list --all --json` — any job with `state.lastStatus == error`
   or `state.consecutiveErrors > 0`. The alert includes the job name, consecutive-error
   count, and the first line of `state.lastError` / `lastErrorReason`
@@ -93,6 +108,18 @@ All commands below were verified against the live host (OpenClaw 2026.6.1).
 1. Add detection + (if safe) fix to `check.sh`, mirroring an existing block.
 2. Add a section here with detect / fix / smoke / risk-class.
 3. If risky, route it through `note_notify`/`note_risk` — never auto-apply.
+
+---
+
+## Foundry boundary
+
+**Self-heal** handles **deterministic OpenClaw infrastructure**: gateway health, cron config, plugin warnings, host resources, binary version, config integrity, backup hygiene. These are factual checks with a known fix — either auto-apply or alert.
+
+**Foundry** handles **tool-level failure patterns**: tool execution failures, retry resolution strategies, outcome tracking, and learned improvements via RISE. These are probabilistic, context-dependent, and managed by the Foundry plugin which injects learned patterns into context.
+
+There is **no overlap**: self-heal reads `lastError` from cron job state (scheduler-level failures), not from tool execution logs. Foundry tracks tool execution outcomes (how a tool failed and what resolved it). The two systems are orthogonal.
+
+**learnings.json** (`~/.openclaw/foundry/learnings.json`) is Foundry's source of truth. Self-heal does not query it — doing so would require hardcoding paths and would duplicate Foundry's RISE injection mechanism, which is the correct way patterns enter the system.
 
 ---
 
